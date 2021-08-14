@@ -3,6 +3,7 @@ import glob
 import zipfile
 import urllib.request
 import os.path
+import re
 
 import pandas as pd
 import numpy as np
@@ -12,6 +13,10 @@ from sklearn.model_selection import train_test_split
 from snorkel.labeling import PandasLFApplier
 from snorkel.labeling import labeling_function
 from snorkel.labeling import LFAnalysis
+from snorkel.analysis import get_label_buckets
+from snorkel.preprocess import preprocessor
+
+from textblob import TextBlob
 
 print(tf.__version__)
 
@@ -94,15 +99,15 @@ def check_out(x):
 
 
 @labeling_function()
-def test_lf(x):
-    return SPAM if "pls" in x.text.lower() else ABSTAIN
+def regex_check_out(x):
+    return SPAM if re.search(r"check.*out", x.text, flags=re.I) else ABSTAIN
 
 
 ABSTAIN = -1
 HAM = 0
 SPAM = 1
 
-lfs = [check_out, check, test_lf]
+lfs = [check_out, check, regex_check_out]
 
 applier = PandasLFApplier(lfs=lfs)  # LFApplier
 L_train = applier.apply(df=df_train)  # L[i, j]는 j번째 레이블링 함수가 i번째 데이터 low에 대해 출력하는 레이블 -1 또는 1로 출력
@@ -112,8 +117,8 @@ L_train = applier.apply(df=df_train)  # L[i, j]는 j번째 레이블링 함수�
 
 # Evaluation
 '''
-Axis 0 will act on all the ROWS in each COLUMN
- Axis 1 will act on all the COLUMNS in each ROW"
+Axis 0 will act on all the ROWS **in each COLUMN**  => 열기준
+ Axis 1 will act on all the COLUMNS **in each ROW**" => 행기준
 '''
 
 coverage_check_out, coverage_check, coverage_testlf = (L_train != ABSTAIN).mean(axis=0)
@@ -123,7 +128,7 @@ print(f"check coverage: {coverage_testlf * 100:.1f}%")
 
 
 
-# Analisys
+# Analysis
 '''
 Polarity: The set of unique labels this LF outputs (excluding abstains)
 Coverage: LF 레이블 데이터 세트의 비율
@@ -134,7 +139,7 @@ Incorrect: 이 LF가 잘못 레이블을 지정한 데이터 포인트의 수(�
 Empirical Accuracy: 이 LF의 경험적 정확도(골드 라벨이 제공된 경우)
 '''
 
-analisys = LFAnalysis(L=L_train, lfs=lfs).lf_summary()
+analysis = LFAnalysis(L=L_train, lfs=lfs).lf_summary()
 
 
 
@@ -143,9 +148,17 @@ analisys = LFAnalysis(L=L_train, lfs=lfs).lf_summary()
 - 행번호(row number)로 선택하는 방법 (.iloc)
 - label이나 조건표현으로 선택하는 방법 (.loc)
 '''
+# d) Balance accuracy and coverage
 check_lf = L_train[:, 1]
 check_label = df_train.iloc[check_lf == SPAM].sample(10, random_state=1)
+'''
+- get_label_buckets(...) to group data points by their predicted label and/or true labels.
+'''
+buckets = get_label_buckets(L_train[:, 1], L_train[:, 2])
+check_buckets = df_train.iloc[buckets[(SPAM, ABSTAIN)]].sample(10, random_state=1)
 
+
+# Writing an LF that uses a third-party model
 
 
 print("prcs fin")
