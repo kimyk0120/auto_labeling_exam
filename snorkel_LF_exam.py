@@ -159,6 +159,161 @@ check_buckets = df_train.iloc[buckets[(SPAM, ABSTAIN)]].sample(10, random_state=
 
 
 # Writing an LF that uses a third-party model
+from snorkel.preprocess import preprocessor
+from textblob import TextBlob
+
+
+@preprocessor(memoize=True)
+def textblob_sentiment(x):
+    scores = TextBlob(x.text)
+    x.polarity = scores.sentiment.polarity
+    x.subjectivity = scores.sentiment.subjectivity
+    return x
+
+
+@labeling_function(pre=[textblob_sentiment])
+def textblob_polarity(x):
+    return HAM if x.polarity > 0.9 else ABSTAIN
+
+
+@labeling_function(pre=[textblob_sentiment])
+def textblob_subjectivity(x):
+    return HAM if x.subjectivity >= 0.5 else ABSTAIN
+
+
+lfs = [textblob_polarity, textblob_subjectivity]
+
+applier = PandasLFApplier(lfs)
+L_train = applier.apply(df_train)
+
+lf_anallysis = LFAnalysis(L_train, lfs).lf_summary()
+
+# Writing More Labeling Functions
+from snorkel.labeling import LabelingFunction
+
+
+def keyword_lookup(x, keywords, label):
+    if any(word in x.text.lower() for word in keywords):
+        return label
+    return ABSTAIN
+
+
+def make_keyword_lf(keywords, label=SPAM):
+    return LabelingFunction(
+        name=f"keyword_{keywords[0]}",
+        f=keyword_lookup,
+        resources=dict(keywords=keywords, label=label),
+    )
+
+
+"""Spam comments talk about 'my channel', 'my video', etc."""
+keyword_my = make_keyword_lf(keywords=["my"])
+
+"""Spam comments ask users to subscribe to their channels."""
+keyword_subscribe = make_keyword_lf(keywords=["subscribe"])
+
+"""Spam comments post links to other channels."""
+keyword_link = make_keyword_lf(keywords=["http"])
+
+"""Spam comments make requests rather than commenting."""
+keyword_please = make_keyword_lf(keywords=["please", "plz"])
+
+"""Ham comments actually talk about the video's content."""
+keyword_song = make_keyword_lf(keywords=["song"], label=HAM)
+
+
+@labeling_function()
+def short_comment(x):
+    """Ham comments are often short, such as 'cool video!'"""
+    return HAM if len(x.text.split()) < 5 else ABSTAIN
+
+
+# LFs with Complex Preprocessors
+from snorkel.preprocess.nlp import SpacyPreprocessor
+
+# The SpacyPreprocessor parses the text in text_field and
+# stores the new enriched representation in doc_field
+spacy = SpacyPreprocessor(text_field="text", doc_field="doc", memoize=True)
+
+
+@labeling_function(pre=[spacy])
+def has_person(x):
+    """Ham comments mention specific people and are short."""
+    if len(x.doc) < 20 and any([ent.label_ == "PERSON" for ent in x.doc.ents]):
+        return HAM
+    else:
+        return ABSTAIN
+
+
+from snorkel.labeling.lf.nlp import nlp_labeling_function
+
+
+@nlp_labeling_function()
+def has_person_nlp(x):
+    """Ham comments mention specific people and are short."""
+    if len(x.doc) < 20 and any([ent.label_ == "PERSON" for ent in x.doc.ents]):
+        return HAM
+    else:
+        return ABSTAIN
+
+
+#  Combining Labeling Function Outputs with the Label Model
+lfs = [
+    keyword_my,
+    keyword_subscribe,
+    keyword_link,
+    keyword_please,
+    keyword_song,
+    regex_check_out,
+    short_comment,
+    has_person_nlp,
+    textblob_polarity,
+    textblob_subjectivity,
+]
+
+applier = PandasLFApplier(lfs=lfs)
+L_train = applier.apply(df=df_train)
+L_test = applier.apply(df=df_test)
+
+lf_anallysis = LFAnalysis(L=L_train, lfs=lfs).lf_summary()
+
+from snorkel.labeling.model import MajorityLabelVoter
+
+majority_model = MajorityLabelVoter()
+preds_train = majority_model.predict(L=L_train)
+
+from snorkel.labeling.model import LabelModel
+
+label_model = LabelModel(cardinality=2, verbose=True)
+label_model.fit(L_train=L_train, n_epochs=500, log_freq=100, seed=123)
+
+majority_acc = majority_model.score(L=L_test, Y=Y_test, tie_break_policy="random")[
+    "accuracy"
+]
+print(f"{'Majority Vote Accuracy:':<25} {majority_acc * 100:.1f}%")
+
+label_model_acc = label_model.score(L=L_test, Y=Y_test, tie_break_policy="random")[
+    "accuracy"
+]
+print(f"{'Label Model Accuracy:':<25} {label_model_acc * 100:.1f}%")
+
+
+# Filtering out unlabeled data points
+from snorkel.labeling import filter_unlabeled_dataframe
+#
+df_train_filtered, probs_train_filtered = filter_unlabeled_dataframe(
+    X=df_train, y=probs_train, L=L_train
+)
+
+
+
+# Training a Classifier
+from sklearn.feature_extraction.text import CountVectorizer
+
+vectorizer = CountVectorizer(ngram_range=(1, 5))
+X_train = vectorizer.fit_transform(df_train_filtered.text.tolist())
+X_test = vectorizer.transform(df_test.text.tolist())
+
 
 
 print("prcs fin")
